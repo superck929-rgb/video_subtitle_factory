@@ -1,0 +1,20 @@
+# output videos (generated files)
+output/
+__pycache__/
+*.mp4
+
+# original source videos (large)
+videos/
+
+# python cache
+*.pyc
+*.pyo
+*.pyd
+
+# virtual env
+.venv/
+venv/
+
+# OS junk
+.DS_Store
+Thumbs.db

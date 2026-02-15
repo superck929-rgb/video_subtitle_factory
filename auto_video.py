@@ -1,7 +1,7 @@
 import os
-import re
 import subprocess
 import pandas as pd
+import json
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -11,41 +11,49 @@ ENDING_DIR = os.path.join(PROJECT_DIR, "ending")
 FONTS_DIR = os.path.join(PROJECT_DIR, "fonts")
 
 EXCEL_PATH = os.path.join(PROJECT_DIR, "brand.xlsx")
-FONT_PATH = os.path.join(FONTS_DIR, "Pretendard-Bold.ttf")
 
-# 엔딩 파일명(오빠 폴더에 맞춰 두 파일을 준비해둔 상태 가정)
+# ✅ drawtext fontfile은 상대경로가 안정적 (cwd=PROJECT_DIR로 고정할 것)
+FONT_REL = "fonts/Pretendard-Bold.ttf"
+FONT_ABS = os.path.join(PROJECT_DIR, FONT_REL)
+
 ENDING_16x9 = os.path.join(ENDING_DIR, "ending_16x9_3s.mp4")
 ENDING_9x16 = os.path.join(ENDING_DIR, "ending_9x16_3s.mp4")
 
-# 타임라인(초)
 OPENING_SEC = 4.0
 ENDING_SEC = 3.0
-
-# 스크롤 기본 속도(px/sec)
 BASE_SCROLL_SPEED = 220
 
-# 스크롤 자막 높이(비율별 y 위치)
-Y_TOP = 0.06   # 9:16 상단
-Y_BOTTOM = 0.88  # 16:9 하단
+Y_TOP = 0.06
+Y_BOTTOM = 0.88
 
-# 스타일
-SCROLL_COLOR = "white@0.9"   # 흰색 90% 불투명 (=10% 투과 느낌)
+SCROLL_COLOR = "white@0.9"
 SCROLL_BORDER_W = 3
 SCROLL_BORDER_COLOR = "black@1"
 
-# 오프닝 스타일 (박스 없음)
 SEASON_COLOR = "yellow"
 SEASON_BORDER_W = 6
 BRAND_COLOR = "white"
 BRAND_BORDER_W = 10
 BRAND_BORDER_COLOR = "black@1"
 
+
 def run(cmd: list[str]) -> None:
-    print(" ".join(cmd))
-    subprocess.run(cmd, check=True)
+    print("\n[RUN]", " ".join(cmd))
+    p = subprocess.run(
+        cmd,
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if p.returncode != 0:
+        print("\n[FFMPEG STDOUT]\n", p.stdout)
+        print("\n[FFMPEG STDERR]\n", p.stderr)
+        raise RuntimeError("FFmpeg 실행 실패 (위 로그 확인)")
+
 
 def ffprobe_json(path: str) -> dict:
-    # width/height/duration 가져오기
     cmd = [
         "ffprobe", "-v", "error",
         "-select_streams", "v:0",
@@ -54,20 +62,25 @@ def ffprobe_json(path: str) -> dict:
         "-of", "json",
         path
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode != 0:
         raise RuntimeError(p.stderr)
-    import json
     return json.loads(p.stdout)
 
+
 def safe_drawtext_text(s: str) -> str:
-    # ffmpeg drawtext에서 ':' '\' "'" 같은 문자가 문제될 수 있어 최소한 escape
-    # (중문/한글은 그대로 가능)
+    """
+    ✅ 짧은 텍스트(시즌/브랜드)용 최소 escape
+    - 콜론(:)은 반드시 escape
+    - 따옴표/백슬래시 방어
+    """
+    s = str(s)
     s = s.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    s = s.replace("\r", " ").replace("\n", " ")
     return s
 
+
 def extract_brand_from_filename(filename: str) -> str:
-    # 01_blackbean.mp4 -> BLACKBEAN
     base = os.path.splitext(filename)[0]
     if "_" in base:
         brand = base.split("_", 1)[1]
@@ -75,30 +88,39 @@ def extract_brand_from_filename(filename: str) -> str:
         brand = base
     return brand.upper()
 
-def build_filter(width: int, height: int, duration: float, season_text: str, brand_text: str, scroll_text: str) -> tuple[str, str]:
+
+def ffconcat_escape(path: str) -> str:
+    return path.replace("'", "''")
+
+
+def relpath_for_ffmpeg(abs_path: str) -> str:
+    """
+    ✅ ffmpeg 인자/필터에 넣을 경로는 상대경로 + 슬래시가 안정적
+    (cwd=PROJECT_DIR 기준)
+    """
+    rel = os.path.relpath(abs_path, PROJECT_DIR)
+    return rel.replace("\\", "/")
+
+
+def build_filter(width: int, height: int, duration: float,
+                 season_text: str, brand_text: str,
+                 scroll_textfile_rel: str) -> tuple[str, str]:
     """
     returns (vf_filter, ending_file)
     """
     is_landscape = width >= height
     ending_file = ENDING_16x9 if is_landscape else ENDING_9x16
 
-    # 스크롤 구간 종료(엔딩 3초 직전)
-    # 전체 편집은 "원본 영상 위에 자막" + "뒤에 엔딩 붙이기" 방식이므로
-    # 여기 duration은 원본의 길이. 스크롤은 원본 마지막 ENDING_SEC 전에 페이드아웃되도록.
     scroll_start = OPENING_SEC
-    scroll_end = max(scroll_start + 1.0, duration - ENDING_SEC)  # 최소 1초는 보장
+    scroll_end = max(scroll_start + 1.0, duration - ENDING_SEC)
 
-    # 9:16 상단, 16:9 하단
     y_ratio = Y_BOTTOM if is_landscape else Y_TOP
     y_expr = f"(h*{y_ratio})"
 
-    # 스크롤 x 수식: 오른쪽 -> 왼쪽, 반복
-    # x = w - mod( (t-scroll_start)*speed , w+text_w )
-    # speed는 기본 속도 사용. (짧은 영상 완주 보정은 2차 단계에서 추가할게)
     speed = BASE_SCROLL_SPEED
-    x_expr = f"w-mod((t-{scroll_start})*{speed}, w+text_w)"
+    x_expr = f"w-(t-{scroll_start})*{speed}"
 
-    # 스크롤 페이드아웃: 엔딩 직전에 자연스럽게 사라지게(마지막 0.6초)
+
     fade_dur = 0.6
     alpha_scroll = (
         f"if(lt(t,{scroll_start}),0,"
@@ -107,8 +129,6 @@ def build_filter(width: int, height: int, duration: float, season_text: str, bra
         f" ))"
     )
 
-    # 오프닝 페이드 인/아웃(0~4초)
-    # 0~0.6초 페이드인, 3.3~4초 페이드아웃
     op_fade_in = 0.6
     op_fade_out_start = 3.3
     alpha_open = (
@@ -118,62 +138,75 @@ def build_filter(width: int, height: int, duration: float, season_text: str, bra
         f" ))"
     )
 
+    # ✅ 콤마는 -vf에서 필터 구분자로도 쓰이므로 반드시 escape
+    alpha_open = alpha_open.replace(",", r"\,")
+    alpha_scroll = alpha_scroll.replace(",", r"\,")
+
     season_text = safe_drawtext_text(season_text)
     brand_text = safe_drawtext_text(brand_text)
-    scroll_text = safe_drawtext_text(scroll_text)
 
-    # 글자 크기(해상도 비례)
-    # 브랜드는 화면 가로 기준 6~7%, 시즌은 절반
-    brand_fs = "max(36, w*0.065)"
-    season_fs = "max(20, w*0.032)"
+    # ✅ 중요: max() 안의 콤마도 반드시 escape + 공백 제거
+    brand_fs = r"max(36\,w*0.065)"
+    season_fs = r"max(20\,w*0.032)"
+    scroll_fs = r"max(22\,w*0.03)"
 
-    # 시즌은 브랜드 위쪽 (중앙 정렬)
-    # y = center - brand_half - gap - season_height
-    season_y = "(h*0.40)"  # 중앙보다 조금 위(감각적으로 안정적)
-    brand_y  = "(h*0.46)"  # 시즌 아래
+    season_y = "(h*0.40)"
+    brand_y = "(h*0.46)"
 
-    # 오프닝 drawtext 2개 + 스크롤 drawtext 1개
+    fontfile = FONT_REL.replace("\\", "/")
+
     vf = (
-        f"drawtext=fontfile='{FONT_PATH}':"
+        f"drawtext=fontfile='{fontfile}':"
         f"text='{season_text}':"
         f"fontsize={season_fs}:"
-        f"fontcolor={SEASON_COLOR}@1:"
-        f"borderw={SEASON_BORDER_W}:"
+        f"fontcolor={SEASON_COLOR}@1"
+        f":borderw={SEASON_BORDER_W}:"
         f"bordercolor={BRAND_BORDER_COLOR}:"
         f"x=(w-text_w)/2:"
         f"y={season_y}:"
-        f"alpha='{alpha_open}':"
-        f"enable='between(t,0,{OPENING_SEC})'"
+        f"alpha={alpha_open}:"
+        f"box=0"
         f","
-        f"drawtext=fontfile='{FONT_PATH}':"
+        f"drawtext=fontfile='{fontfile}':"
         f"text='{brand_text}':"
         f"fontsize={brand_fs}:"
-        f"fontcolor={BRAND_COLOR}@1:"
-        f"borderw={BRAND_BORDER_W}:"
+        f"fontcolor={BRAND_COLOR}@1"
+        f":borderw={BRAND_BORDER_W}:"
         f"bordercolor={BRAND_BORDER_COLOR}:"
         f"x=(w-text_w)/2:"
         f"y={brand_y}:"
-        f"alpha='{alpha_open}':"
-        f"enable='between(t,0,{OPENING_SEC})'"
+        f"alpha={alpha_open}:"
+        f"box=0"
         f","
-        f"drawtext=fontfile='{FONT_PATH}':"
-        f"text='{scroll_text}':"
-        f"fontsize=max(22,w*0.03):"
-        f"fontcolor={SCROLL_COLOR}:"
-        f"borderw={SCROLL_BORDER_W}:"
+        f"drawtext=fontfile='{fontfile}':"
+        f"textfile='{scroll_textfile_rel}':"
+        f"reload=0:"
+        f"fontsize={scroll_fs}:"
+        f"fontcolor={SCROLL_COLOR}"
+        f":borderw={SCROLL_BORDER_W}:"
         f"bordercolor={SCROLL_BORDER_COLOR}:"
         f"x={x_expr}:"
         f"y={y_expr}:"
-        f"alpha='{alpha_scroll}':"
-        f"enable='between(t,{scroll_start},{scroll_end})'"
+        f"alpha={alpha_scroll}:"
+        f"box=0"
     )
 
     return vf, ending_file
 
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 엑셀 읽기
+    # 필수 파일 체크
+    if not os.path.exists(EXCEL_PATH):
+        raise FileNotFoundError(f"엑셀 없음: {EXCEL_PATH}")
+    if not os.path.exists(FONT_ABS):
+        raise FileNotFoundError(f"폰트 없음: {FONT_ABS}")
+    if not os.path.exists(ENDING_16x9):
+        raise FileNotFoundError(f"엔딩 없음: {ENDING_16x9}")
+    if not os.path.exists(ENDING_9x16):
+        raise FileNotFoundError(f"엔딩 없음: {ENDING_9x16}")
+
     df = pd.read_excel(EXCEL_PATH)
     expected_cols = ["파일명", "시즌", "소개문구"]
     for c in expected_cols:
@@ -199,11 +232,22 @@ def main():
         duration = float(info["format"]["duration"])
 
         brand = extract_brand_from_filename(filename)
+        base_name = os.path.splitext(filename)[0]
 
-        vf, ending_file = build_filter(width, height, duration, season, brand, scroll_text)
+        # ✅ 스크롤 텍스트를 txt로 저장 (UTF-8)
+        scroll_txt_abs = os.path.join(OUTPUT_DIR, f"__scroll__{base_name}.txt")
+        with open(scroll_txt_abs, "w", encoding="utf-8", newline="\n") as f:
+            base = scroll_text.replace("\r", "").replace("\n", " ").strip()
+            sep = "   •   "
+            long_text = (base + sep) * 60   # 60번 정도 반복 (영상 길어도 충분)
+            f.write(long_text)
 
-        # 1) 원본 영상에 자막 입힌 임시 파일 생성
-        temp_main = os.path.join(OUTPUT_DIR, f"__temp__{os.path.splitext(filename)[0]}.mp4")
+        scroll_txt_rel = relpath_for_ffmpeg(scroll_txt_abs)
+
+        vf, ending_file = build_filter(width, height, duration, season, brand, scroll_txt_rel)
+
+        # 1) 자막 입힌 임시 파일
+        temp_main = os.path.join(OUTPUT_DIR, f"__temp__{base_name}.mp4")
         cmd1 = [
             "ffmpeg", "-y",
             "-i", input_path,
@@ -214,12 +258,11 @@ def main():
         ]
         run(cmd1)
 
-        # 2) 엔딩 붙이기 (re-encode로 안정적으로 concat)
-        final_out = os.path.join(OUTPUT_DIR, f"{os.path.splitext(filename)[0]}_out.mp4")
-
-        # concat을 위한 list 파일
+        # 2) 엔딩 붙이기
+        final_out = os.path.join(OUTPUT_DIR, f"{base_name}_out.mp4")
         concat_list = os.path.join(OUTPUT_DIR, "__concat__.txt")
-        with open(concat_list, "w", encoding="utf-8") as f:
+
+        with open(concat_list, "w", encoding="utf-8", newline="\n") as f:
             f.write("file '" + ffconcat_escape(temp_main) + "'\n")
             f.write("file '" + ffconcat_escape(ending_file) + "'\n")
 
@@ -233,14 +276,16 @@ def main():
         ]
         run(cmd2)
 
-        # 임시 파일 삭제(원하면 주석 처리)
+        # 임시 파일 정리
         try:
             os.remove(temp_main)
             os.remove(concat_list)
+            os.remove(scroll_txt_abs)
         except Exception:
             pass
 
         print(f"[DONE] {final_out}")
+
 
 if __name__ == "__main__":
     main()
