@@ -8,25 +8,33 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEOS_DIR = os.path.join(PROJECT_DIR, "videos")
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 ENDING_DIR = os.path.join(PROJECT_DIR, "ending")
-FONTS_DIR = os.path.join(PROJECT_DIR, "fonts")
 
 EXCEL_PATH = os.path.join(PROJECT_DIR, "brand.xlsx")
 
-# ✅ drawtext fontfile은 상대경로가 안정적 (cwd=PROJECT_DIR로 고정할 것)
-FONT_REL = "fonts/Pretendard-Bold.ttf"
-FONT_ABS = os.path.join(PROJECT_DIR, FONT_REL)
+FONT_CJK_CANDIDATES = [
+    "fonts/SourceHanSansTC-Bold.otf",
+    "fonts/SourceHanSansTC-Regular.otf",
+    "fonts/NotoSansTC-Bold.ttf",
+    "fonts/NotoSansTC-Regular.ttf",
+    "fonts/NotoSansTC-Bold.otf",
+    "fonts/NotoSansTC-Regular.otf",
+]
+FONT_FALLBACK = "fonts/Pretendard-Bold.ttf"
 
 ENDING_16x9 = os.path.join(ENDING_DIR, "ending_16x9_3s.mp4")
 ENDING_9x16 = os.path.join(ENDING_DIR, "ending_9x16_3s.mp4")
 
 OPENING_SEC = 4.0
 ENDING_SEC = 3.0
+
+FADE_DUR = 0.8
+
 BASE_SCROLL_SPEED = 220
 
 Y_TOP = 0.06
 Y_BOTTOM = 0.88
 
-SCROLL_COLOR = "white@0.9"
+SCROLL_COLOR = "white@0.92"
 SCROLL_BORDER_W = 3
 SCROLL_BORDER_COLOR = "black@1"
 
@@ -35,6 +43,25 @@ SEASON_BORDER_W = 6
 BRAND_COLOR = "white"
 BRAND_BORDER_W = 10
 BRAND_BORDER_COLOR = "black@1"
+
+AUDIO_SR = "48000"
+AUDIO_LAYOUT = "stereo"
+
+# ✅ 브랜드 길이 기준 (10자 초과면 축소)
+BRAND_LEN_THRESHOLD = 10
+BRAND_SCALE_LONG = 2 / 3  # 0.666...
+
+# ✅ 시즌 글자 85%
+SEASON_SCALE = 0.85
+
+# ✅ 시즌-브랜드 추가 간격(픽셀)
+EXTRA_GAP_PX = 15
+
+# ✅ 16:9 위치 더 위로(추가 40px)
+LANDSCAPE_SHIFT_UP_MORE_PX = 40
+
+# ✅ 9:16 스크롤만 5px 위로
+PORTRAIT_SCROLL_UP_PX = 5
 
 
 def run(cmd: list[str]) -> None:
@@ -56,9 +83,8 @@ def run(cmd: list[str]) -> None:
 def ffprobe_json(path: str) -> dict:
     cmd = [
         "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
         "-show_entries", "format=duration",
+        "-show_entries", "stream=index,codec_type,width,height",
         "-of", "json",
         path
     ]
@@ -68,12 +94,22 @@ def ffprobe_json(path: str) -> dict:
     return json.loads(p.stdout)
 
 
+def get_video_wh(path: str) -> tuple[int, int]:
+    info = ffprobe_json(path)
+    vstreams = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
+    if not vstreams:
+        raise RuntimeError(f"비디오 스트림 없음: {path}")
+    return int(vstreams[0]["width"]), int(vstreams[0]["height"])
+
+
+def pick_cjk_font_rel() -> str:
+    for rel in FONT_CJK_CANDIDATES:
+        if os.path.exists(os.path.join(PROJECT_DIR, rel.replace("/", os.sep))):
+            return rel.replace("\\", "/")
+    return FONT_FALLBACK.replace("\\", "/")
+
+
 def safe_drawtext_text(s: str) -> str:
-    """
-    ✅ 짧은 텍스트(시즌/브랜드)용 최소 escape
-    - 콜론(:)은 반드시 escape
-    - 따옴표/백슬래시 방어
-    """
     s = str(s)
     s = s.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
     s = s.replace("\r", " ").replace("\n", " ")
@@ -89,43 +125,36 @@ def extract_brand_from_filename(filename: str) -> str:
     return brand.upper()
 
 
-def ffconcat_escape(path: str) -> str:
-    return path.replace("'", "''")
-
-
 def relpath_for_ffmpeg(abs_path: str) -> str:
-    """
-    ✅ ffmpeg 인자/필터에 넣을 경로는 상대경로 + 슬래시가 안정적
-    (cwd=PROJECT_DIR 기준)
-    """
     rel = os.path.relpath(abs_path, PROJECT_DIR)
     return rel.replace("\\", "/")
 
 
-def build_filter(width: int, height: int, duration: float,
-                 season_text: str, brand_text: str,
-                 scroll_textfile_rel: str) -> tuple[str, str]:
-    """
-    returns (vf_filter, ending_file)
-    """
+def esc_commas(expr: str) -> str:
+    return expr.replace(",", r"\,")
+
+
+def build_vf(width: int, height: int, duration: float,
+             season_text: str, brand_text: str,
+             scroll_textfile_rel: str) -> str:
     is_landscape = width >= height
-    ending_file = ENDING_16x9 if is_landscape else ENDING_9x16
 
     scroll_start = OPENING_SEC
-    scroll_end = max(scroll_start + 1.0, duration - ENDING_SEC)
+    fade_start = max(0.0, duration - FADE_DUR)
 
-    y_ratio = Y_BOTTOM if is_landscape else Y_TOP
-    y_expr = f"(h*{y_ratio})"
+    # ✅ 스크롤 y (9:16만 5px 위로)
+    if is_landscape:
+        y_expr = f"(h*{Y_BOTTOM})"
+    else:
+        y_expr = f"(h*{Y_TOP}-{PORTRAIT_SCROLL_UP_PX})"
 
-    speed = BASE_SCROLL_SPEED
+    speed = BASE_SCROLL_SPEED if is_landscape else int(BASE_SCROLL_SPEED * 0.85)
     x_expr = f"w-(t-{scroll_start})*{speed}"
 
-
-    fade_dur = 0.6
     alpha_scroll = (
         f"if(lt(t,{scroll_start}),0,"
-        f" if(lt(t,{scroll_end - fade_dur}),1,"
-        f"  if(lt(t,{scroll_end}),({scroll_end}-t)/{fade_dur},0)"
+        f" if(lt(t,{fade_start}),1,"
+        f"  if(lt(t,{duration}),({duration}-t)/{FADE_DUR},0)"
         f" ))"
     )
 
@@ -138,70 +167,70 @@ def build_filter(width: int, height: int, duration: float,
         f" ))"
     )
 
-    # ✅ 콤마는 -vf에서 필터 구분자로도 쓰이므로 반드시 escape
-    alpha_open = alpha_open.replace(",", r"\,")
-    alpha_scroll = alpha_scroll.replace(",", r"\,")
+    alpha_open = esc_commas(alpha_open)
+    alpha_scroll = esc_commas(alpha_scroll)
 
     season_text = safe_drawtext_text(season_text)
-    brand_text = safe_drawtext_text(brand_text)
+    brand_text_safe = safe_drawtext_text(brand_text)
 
-    # ✅ 중요: max() 안의 콤마도 반드시 escape + 공백 제거
-    brand_fs = r"max(36\,w*0.065)"
-    season_fs = r"max(20\,w*0.032)"
-    scroll_fs = r"max(22\,w*0.03)"
+    fontfile = pick_cjk_font_rel()
 
-    season_y = "(h*0.40)"
-    brand_y = "(h*0.46)"
+    if is_landscape:
+        # 16:9
+        season_fs_base = r"max(100\,w*0.085)"
+        brand_fs_base = r"max(110\,w*0.115)"
+        scroll_fs = r"max(38\,w*0.048)"
 
-    fontfile = FONT_REL.replace("\\", "/")
+        # ✅ 16:9 위치 더 위로(추가 40px 반영)
+        season_y = f"(h*0.40-55-30-{LANDSCAPE_SHIFT_UP_MORE_PX})"
 
-    vf = (
-        f"drawtext=fontfile='{fontfile}':"
-        f"text='{season_text}':"
-        f"fontsize={season_fs}:"
-        f"fontcolor={SEASON_COLOR}@1"
-        f":borderw={SEASON_BORDER_W}:"
-        f"bordercolor={BRAND_BORDER_COLOR}:"
-        f"x=(w-text_w)/2:"
-        f"y={season_y}:"
-        f"alpha={alpha_open}:"
-        f"box=0"
-        f","
-        f"drawtext=fontfile='{fontfile}':"
-        f"text='{brand_text}':"
-        f"fontsize={brand_fs}:"
-        f"fontcolor={BRAND_COLOR}@1"
-        f":borderw={BRAND_BORDER_W}:"
-        f"bordercolor={BRAND_BORDER_COLOR}:"
-        f"x=(w-text_w)/2:"
-        f"y={brand_y}:"
-        f"alpha={alpha_open}:"
-        f"box=0"
-        f","
-        f"drawtext=fontfile='{fontfile}':"
-        f"textfile='{scroll_textfile_rel}':"
-        f"reload=0:"
-        f"fontsize={scroll_fs}:"
-        f"fontcolor={SCROLL_COLOR}"
-        f":borderw={SCROLL_BORDER_W}:"
-        f"bordercolor={SCROLL_BORDER_COLOR}:"
-        f"x={x_expr}:"
-        f"y={y_expr}:"
-        f"alpha={alpha_scroll}:"
-        f"box=0"
-    )
+        # ✅ 16:9에서 시즌↔브랜드 기본 간격(높이 기반)
+        gap_y = r"max(22\,h*0.022)"
+    else:
+        # 9:16
+        season_fs_base = r"max(90\,w*0.115)"
+        brand_fs_base = r"max(100\,w*0.135)"
+        scroll_fs = r"max(72\,w*0.105)"
+        season_y = "(h*0.34)"
+        gap_y = r"max(24\,h*0.024)"
 
-    return vf, ending_file
+    # ✅ 시즌 글자 85%
+    season_fs = f"({season_fs_base}*{SEASON_SCALE})"
+
+    # ✅ 브랜드 길이 조건 축소 (10자 초과면 2/3)
+    if len(brand_text) > BRAND_LEN_THRESHOLD:
+        brand_fs = f"({brand_fs_base}*{BRAND_SCALE_LONG})"
+    else:
+        brand_fs = brand_fs_base
+
+    # ✅ 핵심 수정:
+    # - text_h 제거!
+    # - 계절 글자 크기(season_fs) 기준으로 브랜드 Y를 잡아서
+    #   브랜드가 2/3로 줄어도 간격이 줄지 않게 유지
+    brand_y_expr = f"({season_y}+{season_fs}+{gap_y}+{EXTRA_GAP_PX})"
+
+    vf_parts = [
+        f"drawtext=fontfile='{fontfile}':text='{season_text}':fontsize={season_fs}:"
+        f"fontcolor={SEASON_COLOR}@1:borderw={SEASON_BORDER_W}:bordercolor={BRAND_BORDER_COLOR}:"
+        f"x=(w-text_w)/2:y={season_y}:alpha={alpha_open}:box=0",
+
+        f"drawtext=fontfile='{fontfile}':text='{brand_text_safe}':fontsize={brand_fs}:"
+        f"fontcolor={BRAND_COLOR}@1:borderw={BRAND_BORDER_W}:bordercolor={BRAND_BORDER_COLOR}:"
+        f"x=(w-text_w)/2:y={brand_y_expr}:alpha={alpha_open}:box=0",
+
+        f"drawtext=fontfile='{fontfile}':textfile='{scroll_textfile_rel}':reload=0:fontsize={scroll_fs}:"
+        f"fontcolor={SCROLL_COLOR}:borderw={SCROLL_BORDER_W}:bordercolor={SCROLL_BORDER_COLOR}:"
+        f"x={x_expr}:y={y_expr}:alpha={alpha_scroll}:box=0",
+    ]
+
+    return ",".join(vf_parts)
 
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 필수 파일 체크
     if not os.path.exists(EXCEL_PATH):
         raise FileNotFoundError(f"엑셀 없음: {EXCEL_PATH}")
-    if not os.path.exists(FONT_ABS):
-        raise FileNotFoundError(f"폰트 없음: {FONT_ABS}")
     if not os.path.exists(ENDING_16x9):
         raise FileNotFoundError(f"엔딩 없음: {ENDING_16x9}")
     if not os.path.exists(ENDING_9x16):
@@ -227,64 +256,84 @@ def main():
             continue
 
         info = ffprobe_json(input_path)
-        width = int(info["streams"][0]["width"])
-        height = int(info["streams"][0]["height"])
+        vstreams = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
+        if not vstreams:
+            print(f"[SKIP] 비디오 스트림 없음: {filename}")
+            continue
+
+        width = int(vstreams[0]["width"])
+        height = int(vstreams[0]["height"])
         duration = float(info["format"]["duration"])
+
+        is_landscape = width >= height
+        ending_file = ENDING_16x9 if is_landscape else ENDING_9x16
 
         brand = extract_brand_from_filename(filename)
         base_name = os.path.splitext(filename)[0]
 
-        # ✅ 스크롤 텍스트를 txt로 저장 (UTF-8)
         scroll_txt_abs = os.path.join(OUTPUT_DIR, f"__scroll__{base_name}.txt")
         with open(scroll_txt_abs, "w", encoding="utf-8", newline="\n") as f:
             base = scroll_text.replace("\r", "").replace("\n", " ").strip()
             sep = "   •   "
-            long_text = (base + sep) * 60   # 60번 정도 반복 (영상 길어도 충분)
-            f.write(long_text)
+            f.write((base + sep) * 80)
 
         scroll_txt_rel = relpath_for_ffmpeg(scroll_txt_abs)
+        vf = build_vf(width, height, duration, season, brand, scroll_txt_rel)
 
-        vf, ending_file = build_filter(width, height, duration, season, brand, scroll_txt_rel)
+        fade_start = max(0.0, duration - FADE_DUR)
 
-        # 1) 자막 입힌 임시 파일
-        temp_main = os.path.join(OUTPUT_DIR, f"__temp__{base_name}.mp4")
+        temp_main_rel = relpath_for_ffmpeg(os.path.join(OUTPUT_DIR, f"__temp__{base_name}.mp4"))
+        input_rel = relpath_for_ffmpeg(input_path)
+
         cmd1 = [
             "ffmpeg", "-y",
-            "-i", input_path,
-            "-vf", vf,
+            "-i", input_rel,
+            "-vf", f"{vf},fade=t=out:st={fade_start}:d={FADE_DUR}",
             "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+            "-fps_mode", "vfr",
+            "-af", f"aresample={AUDIO_SR},aformat=channel_layouts={AUDIO_LAYOUT},afade=t=out:st={fade_start}:d={FADE_DUR}",
             "-c:a", "aac", "-b:a", "192k",
-            temp_main
+            temp_main_rel
         ]
         run(cmd1)
 
-        # 2) 엔딩 붙이기
-        final_out = os.path.join(OUTPUT_DIR, f"{base_name}_out.mp4")
-        concat_list = os.path.join(OUTPUT_DIR, "__concat__.txt")
+        final_out_rel = relpath_for_ffmpeg(os.path.join(OUTPUT_DIR, f"{base_name}_out.mp4"))
+        ending_rel = relpath_for_ffmpeg(ending_file)
 
-        with open(concat_list, "w", encoding="utf-8", newline="\n") as f:
-            f.write("file '" + ffconcat_escape(temp_main) + "'\n")
-            f.write("file '" + ffconcat_escape(ending_file) + "'\n")
+        tw, th = get_video_wh(ending_file)
+        vnorm = (
+            f"scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+            f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        )
 
         cmd2 = [
             "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_list,
+            "-i", temp_main_rel,
+            "-i", ending_rel,
+            "-filter_complex",
+            (
+                f"[0:v]{vnorm},setpts=PTS-STARTPTS[v0];"
+                f"[0:a]aresample={AUDIO_SR},aformat=channel_layouts={AUDIO_LAYOUT},asetpts=PTS-STARTPTS[a0];"
+                f"[1:v]{vnorm},trim=duration={ENDING_SEC},setpts=PTS-STARTPTS[v1];"
+                f"[1:a]aresample={AUDIO_SR},aformat=channel_layouts={AUDIO_LAYOUT},atrim=duration={ENDING_SEC},asetpts=PTS-STARTPTS[a1];"
+                "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+            ),
+            "-map", "[v]",
+            "-map", "[a]",
             "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+            "-fps_mode", "vfr",
             "-c:a", "aac", "-b:a", "192k",
-            final_out
+            final_out_rel
         ]
         run(cmd2)
 
-        # 임시 파일 정리
         try:
-            os.remove(temp_main)
-            os.remove(concat_list)
+            os.remove(os.path.join(PROJECT_DIR, temp_main_rel.replace("/", os.sep)))
             os.remove(scroll_txt_abs)
         except Exception:
             pass
 
-        print(f"[DONE] {final_out}")
+        print(f"[DONE] {os.path.join(OUTPUT_DIR, f'{base_name}_out.mp4')}")
 
 
 if __name__ == "__main__":
