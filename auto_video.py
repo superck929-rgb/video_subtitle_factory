@@ -97,6 +97,10 @@ LANDSCAPE_SHIFT_UP_MORE_PX = 40
 # ✅ 9:16 스크롤만 5px 위로
 PORTRAIT_SCROLL_UP_PX = 5
 
+# ✅ 9:16에서 "영문 5글자 이하" 브랜드는 +40% 확대
+PORTRAIT_SHORT_EN_LEN = 5
+PORTRAIT_SHORT_EN_SCALE = 1.4
+
 
 def run(cmd: list[str]) -> None:
     print("\n[RUN]", " ".join(cmd))
@@ -168,6 +172,20 @@ def esc_commas(expr: str) -> str:
     return expr.replace(",", r"\,")
 
 
+def is_short_english_brand_for_portrait(brand: str) -> bool:
+    """
+    9:16에서만 적용할 "영문 5글자 이하" 조건
+    - A~Z (공백/숫자/기호 없음)
+    - 길이 <= 5
+    """
+    if not brand:
+        return False
+    if len(brand) > PORTRAIT_SHORT_EN_LEN:
+        return False
+    # 영문만 (A-Z)
+    return brand.isascii() and brand.isalpha()
+
+
 def build_vf(width: int, height: int, duration: float,
              season_text: str, brand_text: str,
              scroll_textfile_rel: str) -> str:
@@ -210,15 +228,12 @@ def build_vf(width: int, height: int, duration: float,
     fontfile = pick_cjk_font_rel()
 
     if is_landscape:
-        # 16:9
+        # 16:9 (요청대로 변경 없음)
         season_fs_base = r"max(100\,w*0.085)"
         brand_fs_base = r"max(110\,w*0.115)"
         scroll_fs = r"max(38\,w*0.048)"
 
-        # ✅ 16:9 위치 더 위로(추가 40px 반영)
         season_y = f"(h*0.40-55-30-{LANDSCAPE_SHIFT_UP_MORE_PX})"
-
-        # ✅ 16:9에서 시즌↔브랜드 기본 간격(높이 기반)
         gap_y = r"max(22\,h*0.022)"
     else:
         # 9:16
@@ -231,16 +246,20 @@ def build_vf(width: int, height: int, duration: float,
     # ✅ 시즌 글자 85%
     season_fs = f"({season_fs_base}*{SEASON_SCALE})"
 
-    # ✅ 브랜드 길이 조건 축소 (10자 초과면 2/3)
+    # ✅ 브랜드 기본: 10자 초과면 2/3 축소
     if len(brand_text) > BRAND_LEN_THRESHOLD:
         brand_fs = f"({brand_fs_base}*{BRAND_SCALE_LONG})"
     else:
         brand_fs = brand_fs_base
 
-    # ✅ 핵심 수정:
-    # - text_h 제거!
-    # - 계절 글자 크기(season_fs) 기준으로 브랜드 Y를 잡아서
-    #   브랜드가 2/3로 줄어도 간격이 줄지 않게 유지
+    # ✅ 요청 반영:
+    # - 9:16에서만
+    # - 브랜드가 "영문 5글자 이하"면 브랜드 글자 +40% 확대
+    # - 간격은 brand_y_expr가 season_fs 기준이라 좁아지지 않음
+    if (not is_landscape) and is_short_english_brand_for_portrait(brand_text):
+        brand_fs = f"({brand_fs}*{PORTRAIT_SHORT_EN_SCALE})"
+
+    # ✅ 간격 유지 (brand text_h 사용 안 함)
     brand_y_expr = f"({season_y}+{season_fs}+{gap_y}+{EXTRA_GAP_PX})"
 
     vf_parts = [
