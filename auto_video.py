@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import pandas as pd
 import json
+from openpyxl import load_workbook
 
 def get_base_dir() -> str:
     # exe로 실행하면 sys.executable이 RUN.exe 경로
@@ -21,6 +22,9 @@ FONTS_DIR = os.path.join(PROJECT_DIR, "fonts")
 TOOLS_DIR = os.path.join(PROJECT_DIR, "tools")
 
 EXCEL_PATH = os.path.join(PROJECT_DIR, "brand.xlsx")
+
+# ✅ 업로드용 시트명 고정
+UPLOAD_SHEET_NAME = "upload_1"
 
 def resolve_ffmpeg(tool_name: str) -> str:
     """
@@ -62,7 +66,6 @@ OPENING_SEC = 4.0
 ENDING_SEC = 3.0
 
 FADE_DUR = 0.8
-
 BASE_SCROLL_SPEED = 220
 
 Y_TOP = 0.06
@@ -182,7 +185,6 @@ def is_short_english_brand_for_portrait(brand: str) -> bool:
         return False
     if len(brand) > PORTRAIT_SHORT_EN_LEN:
         return False
-    # 영문만 (A-Z)
     return brand.isascii() and brand.isalpha()
 
 
@@ -252,10 +254,7 @@ def build_vf(width: int, height: int, duration: float,
     else:
         brand_fs = brand_fs_base
 
-    # ✅ 요청 반영:
-    # - 9:16에서만
-    # - 브랜드가 "영문 5글자 이하"면 브랜드 글자 +40% 확대
-    # - 간격은 brand_y_expr가 season_fs 기준이라 좁아지지 않음
+    # ✅ 9:16에서 "영문 5글자 이하" 브랜드는 +40% 확대
     if (not is_landscape) and is_short_english_brand_for_portrait(brand_text):
         brand_fs = f"({brand_fs}*{PORTRAIT_SHORT_EN_SCALE})"
 
@@ -279,6 +278,32 @@ def build_vf(width: int, height: int, duration: float,
     return ",".join(vf_parts)
 
 
+def read_upload_sheet_values(excel_path: str, sheet_name: str) -> pd.DataFrame:
+    """
+    ✅ 시트명(sheet_name)을 고정해서 읽고,
+    ✅ 수식이 아닌 '값(value)'만 읽어서 DataFrame으로 반환 (data_only=True)
+    """
+    wb = load_workbook(excel_path, data_only=True)
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"엑셀에 시트 '{sheet_name}'가 없습니다. 현재 시트: {wb.sheetnames}")
+
+    ws = wb[sheet_name]
+    rows = list(ws.iter_rows(values_only=True))
+
+    if not rows:
+        return pd.DataFrame()
+
+    header = [str(x).strip() if x is not None else "" for x in rows[0]]
+    data = rows[1:]
+
+    df = pd.DataFrame(data, columns=header)
+
+    # 완전 빈 컬럼명 제거(가끔 끝에 빈 헤더가 붙는 경우)
+    df = df.loc[:, [c for c in df.columns if c and c.lower() != "nan"]]
+
+    return df
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -289,7 +314,9 @@ def main():
     if not os.path.exists(ENDING_9x16):
         raise FileNotFoundError(f"엔딩 없음: {ENDING_9x16}")
 
-    df = pd.read_excel(EXCEL_PATH)
+    # ✅ upload_1 시트를 "값"으로 읽기
+    df = read_upload_sheet_values(EXCEL_PATH, UPLOAD_SHEET_NAME)
+
     expected_cols = ["파일명", "시즌", "소개문구"]
     for c in expected_cols:
         if c not in df.columns:
