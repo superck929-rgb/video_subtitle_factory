@@ -153,3 +153,166 @@ x 스크롤 방식 → w-(t-4.0)*220 (mod 제거)
 Excel 기반 자동 영상 자막 + 엔딩 합성 시스템
 
 1차 자동화 엔진 완성 상태
+
+PowerShell에서 push
+cd C:\projects\video_subtitle_factory
+git add README.md
+git commit -m "Update README (usage, structure, ffmpeg fallback, build notes)"
+git push
+
+2) README.md에 넣을 최종 내용 (복사해서 그대로 사용)
+# Video Subtitle Factory (영상 자막 공장)
+
+브랜드별 영상에 **오프닝 타이틀(시즌/브랜드)** + **스크롤 소개문구**를 자동으로 입히고, 마지막에 **엔딩 영상**을 붙여 최종 결과물을 생성합니다.  
+(9:16 / 16:9 모두 지원)
+
+---
+
+## 주요 기능
+
+- Excel(`brand.xlsx`) 기반 배치 처리
+- 오프닝 타이틀 자동 삽입
+  - 상단: 시즌(예: `26 春季款`)
+  - 하단: 브랜드명(예: `BLACKBEAN`)
+- 브랜드명이 긴 경우(10자 초과) 자동 축소 표시 (9:16에서 화면 밖으로 나가는 문제 방지)
+- 스크롤 소개문구(상단/하단 위치는 비율별 설정)
+  - 16:9: 기존 스크롤 크기 유지
+  - 9:16: 스크롤 글자 크기 조정(요구사항 반영)
+- 영상 종료 직전에 오디오/영상 페이드아웃 후 엔딩으로 자연스럽게 전환
+- 엔딩 영상 자동 합치기
+  - `ending/ending_16x9_3s.mp4`
+  - `ending/ending_9x16_3s.mp4`
+- CJK(대만 번체) 폰트 지원
+  - 폰트 파일을 `fonts/`에 넣어 drawtext로 사용
+
+---
+
+## 폴더 구조
+
+아래 구조를 유지해야 합니다.
+
+
+
+video_subtitle_factory/
+auto_video.py
+brand.xlsx
+videos/
+fonts/
+ending/
+tools/ (선택: ffmpeg 포함 배포용)
+output/ (자동 생성)
+
+
+- `videos/` : 원본 영상(.mp4) 넣는 곳
+- `brand.xlsx` : 파일명/시즌/소개문구 입력
+- `fonts/` : 폰트 파일 저장
+- `ending/` : 엔딩 영상 저장
+- `tools/` : (선택) `ffmpeg.exe`, `ffprobe.exe`를 넣어 배포용으로 사용 가능
+- `output/` : 결과 영상 생성 폴더(자동 생성)
+
+---
+
+## Excel (brand.xlsx) 컬럼
+
+필수 컬럼:
+
+- `파일명`
+- `시즌`
+- `소개문구`
+
+예시:
+
+| 파일명 | 시즌 | 소개문구 |
+|---|---|---|
+| 01_blackbean.mp4 | 26 春季款 | 韓系春季新款上架… |
+
+---
+
+## 실행 방법 (개발/로컬)
+
+PowerShell에서 프로젝트 폴더로 이동 후 실행:
+
+```bash
+python auto_video.py
+
+
+결과물은 output/ 폴더에 생성됩니다.
+
+FFmpeg 사용 방식 (중요)
+
+본 프로젝트는 다음 우선순위로 ffmpeg/ffprobe를 찾습니다.
+
+tools/ffmpeg.exe, tools/ffprobe.exe가 있으면 그 파일 사용
+
+없으면 시스템 PATH에 등록된 ffmpeg/ffprobe 사용
+
+둘 다 없으면 에러
+
+배포 환경(동료 PC)에서는 tools/ 폴더에 ffmpeg를 함께 포함하는 것을 권장합니다.
+
+폰트 (대만 번체 깨짐 해결)
+
+CJK(중국어 번체) 문자가 깨지는 경우, CJK 지원 폰트를 fonts/에 넣고 사용합니다.
+
+예:
+
+fonts/SourceHanSansTC-Bold.otf
+
+fonts/NotoSansTC-Bold.ttf
+
+GitHub에 업로드 시 주의 (.gitignore)
+
+프로젝트는 기본적으로 mp4를 무시하도록 설정되어 있을 수 있습니다.
+
+엔딩(mp4)을 GitHub에 포함하려면 .gitignore에 아래 예외를 추가합니다:
+
+!ending/
+!ending/*.mp4
+
+동료에게 배포(압축 전달) 방식
+
+동료에게 전달 시 아래 폴더/파일이 포함되어야 합니다.
+
+auto_video.py
+
+brand.xlsx
+
+videos/ (동료가 영상 넣는 폴더)
+
+fonts/
+
+ending/
+
+tools/ (권장: ffmpeg/ffprobe 포함)
+
+output/ (없어도 됨, 실행 시 자동 생성)
+
+동료는:
+
+압축 해제
+
+videos/에 새 영상 넣기
+
+brand.xlsx 수정
+
+실행
+
+문제 해결 (Troubleshooting)
+
+중국어(번체) 글자 깨짐: CJK 폰트(예: SourceHanSansTC, NotoSansTC)를 fonts/에 넣고 사용
+
+엔딩 합치기 오류(해상도 불일치): 엔딩 영상은 입력 영상 비율/해상도에 맞게 준비되어야 함(필요 시 스케일/패드 처리)
+
+FFmpeg 실행 실패: tools/ 폴더에 ffmpeg가 있는지 확인하거나 시스템 PATH에 ffmpeg 설치/등록
+
+다음 단계(선택)
+
+PyInstaller로 RUN.exe 실행파일 빌드(배포 편의성 향상)
+
+실행 중 진행상태 표시(UI), 에러 팝업/로그 저장
+
+
+---
+
+원하면 내가 README에 **“exe 빌드 방법(PyInstaller 명령어/배포 zip 구성)” 섹션까지 포함한 버전**으로도 바로 만들어줄게.  
+(오빠는 다음 창에서 exe 얘기하자고 했으니, 원하면 그때 합쳐서 업데이트해도 돼.)

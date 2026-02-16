@@ -1,15 +1,49 @@
 import os
+import sys
+import shutil
 import subprocess
 import pandas as pd
 import json
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+def get_base_dir() -> str:
+    # exe로 실행하면 sys.executable이 RUN.exe 경로
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    # py로 실행하면 현재 파일 폴더
+    return os.path.dirname(os.path.abspath(__file__))
+
+PROJECT_DIR = get_base_dir()
 
 VIDEOS_DIR = os.path.join(PROJECT_DIR, "videos")
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 ENDING_DIR = os.path.join(PROJECT_DIR, "ending")
+FONTS_DIR = os.path.join(PROJECT_DIR, "fonts")
+TOOLS_DIR = os.path.join(PROJECT_DIR, "tools")
 
 EXCEL_PATH = os.path.join(PROJECT_DIR, "brand.xlsx")
+
+def resolve_ffmpeg(tool_name: str) -> str:
+    """
+    1) tools 폴더에 있으면 그걸 사용
+    2) 없으면 PATH에서 검색
+    3) 둘 다 없으면 에러
+    """
+    local_path = os.path.join(TOOLS_DIR, f"{tool_name}.exe")
+    if os.path.exists(local_path):
+        print(f"[INFO] Using local {tool_name}: {local_path}")
+        return local_path
+
+    path_exec = shutil.which(tool_name)
+    if path_exec:
+        print(f"[INFO] Using PATH {tool_name}: {path_exec}")
+        return path_exec
+
+    raise FileNotFoundError(
+        f"{tool_name}를 찾을 수 없습니다. tools 폴더에도 없고 시스템 PATH에도 없습니다."
+    )
+
+FFMPEG_EXE = resolve_ffmpeg("ffmpeg")
+FFPROBE_EXE = resolve_ffmpeg("ffprobe")
 
 FONT_CJK_CANDIDATES = [
     "fonts/SourceHanSansTC-Bold.otf",
@@ -82,7 +116,7 @@ def run(cmd: list[str]) -> None:
 
 def ffprobe_json(path: str) -> dict:
     cmd = [
-        "ffprobe", "-v", "error",
+        FFPROBE_EXE, "-v", "error",
         "-show_entries", "format=duration",
         "-show_entries", "stream=index,codec_type,width,height",
         "-of", "json",
@@ -286,7 +320,7 @@ def main():
         input_rel = relpath_for_ffmpeg(input_path)
 
         cmd1 = [
-            "ffmpeg", "-y",
+            FFMPEG_EXE, "-y",
             "-i", input_rel,
             "-vf", f"{vf},fade=t=out:st={fade_start}:d={FADE_DUR}",
             "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
@@ -307,7 +341,7 @@ def main():
         )
 
         cmd2 = [
-            "ffmpeg", "-y",
+            FFMPEG_EXE, "-y",
             "-i", temp_main_rel,
             "-i", ending_rel,
             "-filter_complex",
