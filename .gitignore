@@ -20,3 +20,8 @@ venv/
 # OS junk
 .DS_Store
 Thumbs.db
+tools/ffmpeg.exe
+tools/ffprobe.exe
+backup*/
+backup_*/
+*.zip
