@@ -508,3 +508,96 @@ YB_影片自動字幕系統_v1.1.zip
 🎬 브랜드 콘텐츠 생산 자동화 플랫폼
 
 을 목표로 한다.
+
+1️⃣ 초기 문제
+
+YouTube Data API 호출 시 다음 오류 발생:
+
+HttpError 403: insufficientPermissions
+Request had insufficient authentication scopes.
+
+원인
+
+기존 토큰이 youtube.upload 스코프로만 발급됨
+
+채널 조회(channels().list(mine=True))는 더 넓은 youtube 스코프 필요
+
+이전에 발급된 토큰이 캐시되어 계속 403 발생
+
+2️⃣ 브라우저 혼선 문제
+
+Python 실행 시 Edge 브라우저 자동 실행
+
+Edge에 로그인된 계정이 Chrome 계정과 달랐음
+
+과거 브랜드 채널 이름(동물 이야기, 여성 이야기 등)이 표시됨
+
+현재 사용 중인 채널과 불일치
+
+해결 방법
+
+Edge 창 닫기
+
+PowerShell에서 URL 복사
+
+Chrome 시크릿 창에서 직접 로그인 진행
+
+정확한 Gmail 계정 선택
+
+3️⃣ 토큰 초기화
+
+기존 잘못된 인증 토큰 삭제:
+
+del *.token.json
+
+4️⃣ SCOPES 수정
+기존
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+수정 후
+SCOPES = ["https://www.googleapis.com/auth/youtube"]
+
+
+youtube 스코프는 채널 조회 + 업로드 모두 가능
+
+5️⃣ 재인증 절차
+python upload.py
+
+
+브라우저에서:
+
+Google 계정 선택
+
+브랜드 채널 선택 (YIBO and buddies)
+
+"고급 → 계속"
+
+액세스 허용
+
+6️⃣ 최종 성공 메시지
+인증 성공! 연결된 채널: YIBO and buddies
+
+
+✔ OAuth 정상
+✔ 채널 조회 성공
+✔ 토큰 저장 완료
+
+📂 현재 상태
+
+프로젝트: youtube_auto_upload
+
+OAuth 정상 연결 완료
+
+채널: YIBO and buddies
+
+YouTube Data API v3 사용 가능
+
+다음 단계: 영상 자동 업로드 구현
+
+⚠ 향후 주의 사항
+
+계정이 여러 개일 경우 반드시 Chrome 시크릿 모드 사용
+
+스코프 변경 시 반드시 *.token.json 삭제 후 재인증
+
+403 insufficientPermissions 발생 시 → 토큰/스코프 재확인
