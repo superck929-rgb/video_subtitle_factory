@@ -601,3 +601,202 @@ YouTube Data API v3 사용 가능
 스코프 변경 시 반드시 *.token.json 삭제 후 재인증
 
 403 insufficientPermissions 발생 시 → 토큰/스코프 재확인
+
+📦 YB YouTube Auto Upload System
+
+엑셀 기반으로 영상 자동 업로드 + 썸네일 자동 생성 + 로그 기록까지 처리하는 자동화 시스템.
+
+🏗 시스템 구조
+projects/
+│
+├─ video_subtitle_factory/
+│   ├─ brand.xlsx          ← 업로드 제어용 엑셀
+│   └─ output/             ← 자막 자동화 완료 영상(.mp4)
+│
+└─ youtube_auto_upload/
+    ├─ upload_from_excel.py
+    ├─ token.json
+    ├─ client_secret_xxx.json
+    ├─ thumbnails/         ← 자동 생성 썸네일
+    └─ upload_log.csv      ← 업로드 로그
+
+🔁 전체 자동화 흐름
+
+자막 자동화 → output 폴더에 mp4 생성
+
+brand.xlsx 에 업로드할 영상 파일명 입력
+
+upload_from_excel.py 실행
+
+자동 처리:
+
+영상 업로드
+
+제목/설명/태그 자동 생성
+
+2초 지점 썸네일 자동 추출
+
+썸네일 적용
+
+엑셀 업데이트
+
+로그 기록
+
+📊 엑셀 구조 (upload_1 시트)
+
+필수 컬럼:
+
+컬럼	설명
+파일명	예: 01_blackbean.mp4
+시즌	예: 26 春季款
+소개문구	브랜드 설명 텍스트
+브랜드	브랜드명
+언어	자동으로 zh-TW 입력
+제목	비어있으면 자동 생성
+설명	비어있으면 자동 생성
+태그	비어있으면 자동 생성
+공개상태	공란이면 unlisted
+업로드상태	완료 시 자동 기록
+videoId	업로드 후 자동 기록
+썸네일초	공란이면 2.0초
+썸네일상태	완료 / 실패 기록
+썸네일파일	생성된 jpg 경로
+🎬 영상 파일 매칭 로직
+
+엑셀에:
+
+01_blackbean.mp4
+
+
+실제 탐색 우선순위:
+
+1️⃣ 01_blackbean_out.mp4
+2️⃣ 01_blackbean.mp4
+
+즉, _out 붙은 파일이 우선.
+
+🖼 썸네일 자동 생성 방식
+
+ffmpeg 사용
+
+기본 2초 지점 프레임 추출
+
+jpg 파일을 thumbnails 폴더에 저장
+
+YouTube custom thumbnail API 적용
+
+※ 채널이 고급 기능 활성화되지 않으면 403 오류 발생
+
+🔐 인증 구조
+
+OAuth 2.0 사용
+
+token.json 삭제 시 채널 재선택 가능
+
+다른 브랜드 채널로 전환하려면:
+
+token.json 삭제
+
+스크립트 재실행
+
+원하는 채널 선택
+
+⚠ 자주 발생하는 문제
+1️⃣ 업로드 수 0
+
+원인:
+
+파일명 셀 값이 실제로 None
+
+병합 셀 문제
+
+이미 업로드 상태로 판단됨
+
+해결:
+
+병합 해제
+
+videoId/업로드상태 완전 삭제
+
+디버그 출력 확인
+
+2️⃣ 썸네일 403 오류
+The authenticated user doesn't have permissions to upload and set custom video thumbnails.
+
+
+원인:
+
+채널 고급 기능 미활성화
+
+해결:
+
+YouTube Studio → 설정 → 기능 자격 → 고급 기능 활성화
+
+📄 로그 파일
+
+upload_log.csv
+
+기록 항목:
+
+업로드 시간
+
+엑셀 파일명
+
+실제 업로드 파일명
+
+privacy
+
+videoId
+
+제목
+
+썸네일 상태
+
+🧠 자동 생성 규칙
+제목 기본값
+브랜드｜시즌 新品上架（韓國童裝）
+
+설명 기본값
+
+브랜드 + 시즌
+
+소개문구
+
+해시태그 자동 삽입
+
+태그 기본값
+
+韓國童裝
+
+東大門
+
+童裝批發
+
+韓系童裝
+
+新品上架
+
+브랜드
+
+시즌
+
+🧩 핵심 설계 철학
+
+✔ 엑셀 = 컨트롤 타워
+✔ 영상 폴더는 그대로 둠
+✔ 업로드 여부는 엑셀로 제어
+✔ 썸네일 자동화까지 포함한 풀 자동화
+
+🚀 현재 상태
+
+영상 업로드 ✔
+
+엑셀 연동 ✔
+
+로그 기록 ✔
+
+썸네일 자동 생성 ✔
+
+채널 전환 가능 ✔
+
+완전 자동화 구조 구축 완료.
